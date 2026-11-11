@@ -2,12 +2,12 @@ import graphene
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied
 import graphene_django_optimizer as gql_optimizer
-from core import filter_validity
+from core.gql import legacy_row_filters, row_filter_arguments
+from core.models import Audits, Validity
 from django.utils.translation import gettext as _, gettext_lazy
 from payer.apps import PayerConfig
 from core.schema import OrderedDjangoFilterConnectionField
-from .models import Payer
-from location.models import Location, LocationManager
+from .models import Payer, Funding
 from product.schema import ProductGQLType
 
 from .gql_queries import PayerGQLType, FundingGQLType
@@ -25,7 +25,7 @@ class Query(graphene.ObjectType):
         FundingGQLType,
         payer_id=graphene.ID(),
         client_mutation_id=graphene.String(),
-        show_history=graphene.Boolean(),
+        **row_filter_arguments(),
         parent_location_level=graphene.Int(),
         orderBy=graphene.List(of_type=graphene.String),
     )
@@ -35,7 +35,7 @@ class Query(graphene.ObjectType):
         
     payers = OrderedDjangoFilterConnectionField(
         PayerGQLType,
-        show_history=graphene.Boolean(),
+        **row_filter_arguments(),
         search=graphene.String(
             description=gettext_lazy("Search in `name`, `phone` & `email`")
         ),
@@ -43,20 +43,44 @@ class Query(graphene.ObjectType):
     )
     payer = graphene.Field(PayerGQLType, uuid=graphene.UUID())
 
+    def resolve_fundings(self, info, **kwargs):
+        # it had no resolver: the whole Funding table, without any right
+        if not info.context.user.has_perms(PayerConfig.gql_query_payers_perms):
+            raise PermissionDenied(_("unauthorized"))
+        # narrowed to the fundings of the payers the user may see by Funding.get_queryset
+        # (FundingGQLType); the ones not deleted by default, showHistory adds the deleted
+        legacy_row_filters(
+            info, kwargs, validity=Validity.ALL if kwargs.get("show_history") else Validity.NOW)
+        return Funding.objects.all()
+
+    def resolve_funding(self, info, uuid=None, **kwargs):
+        # it had no resolver (always null); within the user's scope
+        if not info.context.user.has_perms(PayerConfig.gql_query_payers_perms):
+            raise PermissionDenied(_("unauthorized"))
+        if uuid is None:
+            return None
+        return Funding.get_queryset(
+            Funding.objects.filter(id=uuid), info.context.user, validity=Validity.ALL).first()
+
     def resolve_payer(self, info, uuid, **kwargs):
         if not info.context.user.has_perms(PayerConfig.gql_query_payers_perms):
             raise PermissionDenied(_("unauthorized"))
-
-        return Payer.objects.get(uuid=uuid)
+        # a lookup by uuid: whatever its validity (as before), within the user's scope
+        return Payer.get_queryset(
+            Payer.objects.filter(uuid=uuid), info.context.user, validity=Validity.ALL).first()
 
     def resolve_payers(self, info, **kwargs):
         if not info.context.user.has_perms(PayerConfig.gql_query_payers_perms):
             raise PermissionDenied(_("unauthorized"))
 
-        filters = Payer.objects
+        filters = Payer.objects.all()
+        # validity / audits and the row scope are applied by Payer.get_queryset
+        # (PayerGQLType, OP-2029); showHistory keeps its legacy meaning: no validity filter
         show_history = kwargs.get("show_history", False)
-        if not show_history:
-            filters = filters.filter(*filter_validity(**kwargs))
+        legacy_row_filters(
+            info, kwargs,
+            validity=Validity.ALL if show_history else Validity.NOW,
+            audits=Audits.ALL if show_history else None)
 
         search = kwargs.get("search", None)
         if search is not None:
@@ -65,8 +89,6 @@ class Query(graphene.ObjectType):
                 | Q(phone__icontains=search)
                 | Q(email__icontains=search)
             )
-
-        filters = LocationManager().build_user_location_filter_query(info.context.user._u, queryset = filters)
 
         return gql_optimizer.query(filters, info)
 

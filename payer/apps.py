@@ -5,7 +5,7 @@ MODULE_NAME = "payer"
 DEFAULT_CFG = {
     "gql_query_payers_perms": ["121801"],
     "gql_mutation_payer_add_perms": ["121802"],
-    "gql_mutation_payer_update_perms": ["122103"],
+    "gql_mutation_payer_update_perms": ["121803"],
     "gql_mutation_payer_delete_perms": ["121804"],
 }
 

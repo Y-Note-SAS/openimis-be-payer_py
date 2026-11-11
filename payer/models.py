@@ -20,6 +20,10 @@ class PayerType(models.Model):
 
 
 class Payer(core_models.VersionedModel):
+    # a payer is seen within the user's regions / districts; a national payer (no
+    # location) by every user (the location filter keeps a null location)
+    row_scope = core_models.LocationScope("location", loc_types=("R", "D"))
+
     PAYER_TYPE_COOP = "C"
     PAYER_TYPE_DONOR = "D"
     PAYER_TYPE_GOV = "G"
@@ -63,13 +67,21 @@ class Payer(core_models.VersionedModel):
     # rowid = models.TextField(db_column='RowID', blank=True, null=True)
 
     @classmethod
-    def get_queryset(cls, queryset, user):
-        from location.models import LocationManager
-
-        queryset = cls.filter_queryset(queryset)
-        if settings.ROW_SECURITY and not user._u.is_imis_admin:
-            queryset = LocationManager().build_user_location_filter_query(user._u, queryset = Payer.objects, loc_types=['R', 'D'])
-        return queryset
+    def get_queryset(cls, queryset, user=None, *, validity=None, audits=None):
+        """
+        The payers `user` may see; current ones unless validity / audits ask otherwise
+        (OP-2029). Narrowed by `row_scope` to the user's regions / districts; a payer
+        with no location (a national payer) stays visible to every user holding the
+        right (the location filter lets a null location through). An anonymous user
+        sees none. `queryset` None means every payer (premium_action calls it so).
+        """
+        queryset = cls.apply_row_filters(queryset, validity, audits, default=cls.filter_queryset)
+        user = cls.scoping_user(user)
+        if settings.ROW_SECURITY and (user is None or getattr(user, "is_anonymous", True)):
+            return queryset.none()
+        if not settings.ROW_SECURITY:
+            return queryset
+        return cls.row_scope.filter(queryset, user, cls)
 
     class Meta:
         managed = True
@@ -102,7 +114,28 @@ class Funding(core_models.HistoryModel):
         related_name="fundings",
     )
     receipt = models.CharField(db_column="Receipt", max_length=50)
-    
+
+    # a funding is seen by whoever sees its payer (a funding without payer has no
+    # location: the composed path lets it through, like a national payer)
+    row_scope = core_models.ParentScope("payer")
+
+    @classmethod
+    def get_queryset(cls, queryset, user=None, *, validity=None, audits=None):
+        """
+        The fundings of the payers `user` may see; the ones not deleted unless validity
+        asks otherwise (OP-2029). Fundings keep their audit trail in a history table,
+        so `audits` (showHistory) only means "the deleted ones as well" here.
+        """
+        if audits is not None and audits != core_models.Audits.NONE:
+            validity, audits = core_models.Validity.ALL, None
+        queryset = cls.apply_row_filters(queryset, validity, audits, default=cls.filter_queryset)
+        user = cls.scoping_user(user)
+        if settings.ROW_SECURITY and (user is None or getattr(user, "is_anonymous", True)):
+            return queryset.none()
+        if not settings.ROW_SECURITY:
+            return queryset
+        return cls.row_scope.filter(queryset, user, cls)
+
     class Meta:
         managed = True
         db_table = "tblFunding"
