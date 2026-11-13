@@ -8,6 +8,7 @@ from invoice.apps import InvoiceConfig
 from .apps import PayerConfig
 from .models import Payer, Funding
 from core import ExtendedConnection
+from core.gql.scoped_object_type import ScopedQuerysetMixin
 from core.models import filter_validity
 
 from product.schema import ProductGQLType
@@ -73,7 +74,7 @@ class PayerFilter(django_filters.FilterSet):
         }
 
 
-class FundingGQLType(DjangoObjectType):
+class FundingGQLType(ScopedQuerysetMixin, DjangoObjectType):
     uuid = graphene.UUID()
     
     def resolve_uuid(self, info, **kwargs):
@@ -96,7 +97,7 @@ class FundingConnection(graphene.Connection):
         return len(self.iterable)
 
 
-class PayerGQLType(DjangoObjectType):
+class PayerGQLType(ScopedQuerysetMixin, DjangoObjectType):
 
     #premiums = graphene.relay.ConnectionField(FundingConnection)
     fundings = graphene.relay.ConnectionField(FundingConnection)
